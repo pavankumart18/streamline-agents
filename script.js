@@ -1,373 +1,601 @@
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => document.querySelectorAll(selector);
+import { openaiConfig } from "bootstrap-llm-provider";
+import hljs from "highlight.js";
+import { html, render } from "lit-html";
+import { unsafeHTML } from "lit-html/directives/unsafe-html.js";
+import { Marked } from "marked";
+import saveform from "saveform";
 
-const nodes = {
-  form: $("#orchestrator-form"),
-  agentContainer: $("#agent-container"),
-  runButton: $("#orchestrator-form button[type='submit']"),
-  clearButton: $("#clear-log"),
-  flowNodes: $("#flow-nodes"),
-  dummyGrid: $("#dummy-data-grid"),
-  dropzone: $("#data-dropzone"),
-  fileInput: $("#data-file-input"),
-  uploadedList: $("#uploaded-data-list"),
-  dataNotes: $("#data-notes"),
-  dataSection: $("#data-input-section"),
-  dataStatus: $("#data-input-status"),
-  inlineRunButton: $("#inline-run-button"),
-};
+const $ = (selector, el = document) => el.querySelector(selector);
+const loading = html`<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>`;
 
-const RUN_LABEL = nodes.runButton?.innerHTML || "Run Agents";
-let currentRunLabel = RUN_LABEL;
-const MIN_AGENTS = 2;
-const MAX_AGENTS = 5;
-const DEFAULT_BASE_URL = "https://api.openai.com/v1";
-const RUN_STAGES = { IDLE: "idle", PLAN: "plan", DATA: "data", RUN: "run" };
-const PLACEHOLDER = `
-  <div class="text-center text-body-secondary small border border-dashed border-secondary rounded-3 py-4 bg-body">
-    Agents will appear here after you run a problem.
-  </div>`;
-const ARCHITECT_PROMPT = `Respond with JSON only: {"plan":[...],"inputs":[...]}.
-"plan": ${MIN_AGENTS}-${MAX_AGENTS} agents, each { "agentName","systemInstruction","initialTask" }.
-"inputs": up to 3 items, each { "title","type","sample" } where "type" is "text","csv", or "json". Keep sentences short.`;
-const ALLOWED_INPUT_TYPES = ["text", "csv", "json"];
+const marked = new Marked();
+marked.use({
+  renderer: {
+    code(code, lang) {
+      const language = hljs.getLanguage(lang) ? lang : "plaintext";
+      const highlighted = hljs.highlight(code ?? "", { language }).value.trim();
+      return `<pre class="hljs language-${language}"><code>${highlighted}</code></pre>`;
+    },
+  },
+});
+
+const settingsForm = saveform("#settings-form");
+$("#settings-form [type=reset]").addEventListener("click", () => settingsForm.clear());
+
+const llmSession = { creds: null };
+$("#configure-llm").addEventListener("click", async () => {
+  llmSession.creds = await openaiConfig({ show: true });
+});
+
+const config = await fetch("config.json").then((res) => res.json());
+config.demos = (config.demos || []).map((demo) => ({
+  ...demo,
+  inputs: (demo.inputs || []).map((input) => ({ ...input, id: uniqueId("input") })),
+}));
+
+const customProblemForm = $("#custom-problem-form");
+const customProblemField = $("#custom-problem");
+const customProblemButton = $("#run-custom-problem");
+
+customProblemForm?.addEventListener("submit", handleCustomProblemSubmit);
 
 const state = {
-  stage: RUN_STAGES.IDLE,
+  selectedDemoIndex: null,
+  stage: "idle",
   plan: [],
-  config: null,
-  inputs: [],
+  suggestedInputs: [],
+  selectedInputs: new Set(),
   uploads: [],
-};
-const dataSectionHome = {
-  parent: nodes.dataSection?.parentElement || null,
-  next: nodes.dataSection?.nextElementSibling || null,
+  notes: "",
+  agentOutputs: [],
+  architectBuffer: "",
+  runningAgentIndex: null,
+  error: "",
+  customProblem: null,
 };
 
-init();
+initializeSettings(config.defaults || {});
+renderDemoCards();
+renderApp();
+syncCustomProblemControls();
 
-function init() {
-  bindEvents();
-  persistFields(["model", "base-url", "problem"]);
-  loadProblems();
-  resetUI();
+function initializeSettings(defaults) {
+  if ($("#model") && !$("#model").value) $("#model").value = defaults.model || "gpt-5-mini";
+  if ($("#architect-prompt") && !$("#architect-prompt").value) $("#architect-prompt").value = defaults.architectPrompt || "";
+  if ($("#agent-style") && !$("#agent-style").value) $("#agent-style").value = defaults.agentStyle || "";
+  if ($("#max-agents") && !$("#max-agents").value) $("#max-agents").value = defaults.maxAgents || 4;
 }
 
-function bindEvents() {
-  nodes.form.addEventListener("submit", onSubmit);
-  nodes.clearButton.addEventListener("click", resetUI);
-  nodes.dummyGrid?.addEventListener("click", (event) => {
-    const card = event.target.closest("[data-input-id]");
-    if (card) card.classList.toggle("active");
-  });
-  nodes.dropzone?.addEventListener("click", () => nodes.fileInput?.click());
-  nodes.dropzone?.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    nodes.dropzone.classList.add("dragover");
-  });
-  nodes.dropzone?.addEventListener("dragleave", () => nodes.dropzone.classList.remove("dragover"));
-  nodes.dropzone?.addEventListener("drop", (event) => {
-    event.preventDefault();
-    nodes.dropzone.classList.remove("dragover");
-    handleFiles(event.dataTransfer?.files);
-  });
-  nodes.fileInput?.addEventListener("change", (event) => handleFiles(event.target.files));
-  nodes.uploadedList?.addEventListener("click", (event) => {
-    const target = event.target.closest("[data-remove-upload]");
-    if (!target) return;
-    state.uploads = state.uploads.filter((item) => item.id !== target.dataset.removeUpload);
-    renderUploadedDataList();
-  });
-  nodes.inlineRunButton?.addEventListener("click", () => nodes.form.requestSubmit());
-  $$("[data-file-trigger]").forEach((button) =>
-    button.addEventListener("click", (event) => {
-      event.preventDefault();
-      nodes.fileInput?.click();
-    }),
+function setState(updates) {
+  Object.assign(state, updates);
+  renderDemoCards();
+  renderApp();
+  syncCustomProblemControls();
+}
+
+function renderDemoCards() {
+  const busy = state.stage === "architect" || state.stage === "run";
+  render(
+    (config.demos || []).map((demo, index) => html`
+      <div class="col-sm-6 col-lg-4">
+        <div class="card demo-card h-100 shadow-sm">
+          <div class="card-body d-flex flex-column">
+            <div class="text-center text-primary display-5 mb-3"><i class="${demo.icon}"></i></div>
+            <h5 class="card-title">${demo.title}</h5>
+            <p class="card-text text-body-secondary small flex-grow-1">${demo.body}</p>
+            <button class="btn btn-primary mt-auto" @click=${() => planDemo(index)} ?disabled=${busy}>
+              ${busy && state.selectedDemoIndex === index ? "Streaming..." : "Plan & Run"}
+            </button>
+          </div>
+        </div>
+      </div>
+    `),
+    $("#demo-cards"),
   );
 }
 
-function onSubmit(event) {
-  event.preventDefault();
-  const cfg = readForm();
-  if (!cfg.problem || !cfg.apiKey || !cfg.baseUrl) return;
-  if (state.stage === RUN_STAGES.DATA && state.plan.length) runAgents(cfg);
-  else runArchitect(cfg);
-}
-
-async function runArchitect(cfg) {
-  state.stage = RUN_STAGES.PLAN;
-  state.plan = [];
-  state.inputs = [];
-  state.uploads = [];
-  state.config = { ...cfg };
-  toggleInlineRunButton(false);
-  resetDataSection();
-  nodes.agentContainer.innerHTML = "";
-  resetFlowDiagram();
-  restoreDataSectionPosition();
-  setRunningState(true, "Planning");
-  setDataStatus("Generating architect plan...");
-
-  const architectCard = createAgentCard("Architect", "Generates the execution order", "Plan");
-  nodes.agentContainer.appendChild(architectCard.wrapper);
-  activateCard(architectCard, "Planning");
-  const planNode = addFlowNode("Architect Plan");
-  let planText = "";
-  await streamOpenAI({
-    ...cfg,
-    messages: [
-      { role: "system", content: ARCHITECT_PROMPT },
-      { role: "user", content: cfg.problem },
-    ],
-    onChunk: (txt) => {
-      planText += txt;
-      architectCard.output.textContent = planText;
-      bumpProgress(planNode, 6);
-    },
-  });
-  const parsed = parsePlanResponse(planText, cfg.problem);
-  state.plan = parsed.plan;
-  state.inputs = parsed.inputs;
-  renderPlanSummary(architectCard, state.plan, planText);
-  setFlowConfidence(planNode, randomConfidence());
-  finishFlowNode(planNode);
-  deactivateCard(architectCard, "Done");
-
-  renderInputCards(state.inputs);
-  placeDataSectionAfter(architectCard.wrapper);
-  highlightDataSection(true);
-  setDataStatus("Select or add at least one data source, then press Start Agents.");
-  toggleInlineRunButton(true);
-  setRunLabel("Start Agents");
-  state.stage = RUN_STAGES.DATA;
-  setRunningState(false);
-}
-
-async function runAgents(cfg) {
-  const dataEntries = collectDataEntries();
-  if (!dataEntries.length) {
-    highlightDataSection(true);
+function renderApp() {
+  const container = $("#output");
+  if (!container) return;
+  if (state.selectedDemoIndex === null) {
+    render(
+      html`
+        <div class="text-center text-body-secondary py-5">
+          <p>Select a card above to stream the architect plan and run the agents.</p>
+        </div>
+      `,
+      container,
+    );
     return;
   }
-  const execCfg = {
-    ...(state.config || {}),
-    apiKey: cfg.apiKey,
-    baseUrl: cfg.baseUrl,
-    model: cfg.model,
-  };
-  execCfg.problem = execCfg.problem || cfg.problem;
-  state.stage = RUN_STAGES.RUN;
-  toggleInlineRunButton(false);
-  highlightDataSection(false);
-  setRunningState(true, "Running");
-
-  await runAgentStage(execCfg, state.plan, dataEntries);
-  finishRunState();
+  const demo = getSelectedDemo();
+  render(
+    html`
+      ${state.error ? html`<div class="alert alert-danger">${state.error}</div>` : null}
+      <section class="card mb-4">
+        <div class="card-body">
+          <h3 class="h4 mb-2">${demo.title}</h3>
+          <p class="mb-0 text-body-secondary small">${demo.problem}</p>
+        </div>
+      </section>
+      ${renderStageBadges()}
+      ${renderPlan()}
+      ${renderDataInputs()}
+      ${renderFlow()}
+      ${renderAgentOutputs()}
+    `,
+    container,
+  );
 }
 
-async function runAgentStage(cfg, plan, dataEntries) {
-  const dataContext = formatDataEntries(dataEntries);
-  let context = dataContext;
-  for (let index = 0; index < plan.length; index += 1) {
-    const agent = plan[index];
-    const card = createAgentCard(agent.agentName || `Agent ${index + 1}`, agent.systemInstruction || "", `Step ${index + 1}`);
-    nodes.agentContainer.appendChild(card.wrapper);
-    activateCard(card);
-    const validating = /validate|compliance|checker|verification|risk|quality|anomaly|audit/i.test(`${agent.agentName} ${agent.systemInstruction}`);
-    const node = addFlowNode(card.title, validating ? "validation" : "process");
-    let output = "";
-    await streamOpenAI({
-      ...cfg,
-      messages: [
-        {
-          role: "system",
-          content: `${(agent.systemInstruction || "Deliver the next actionable step.").trim()}. Answer in <=50 words using short bullet sentences.`,
-        },
-        {
-          role: "user",
-          content: `Problem:\n${cfg.problem}\n\nInput Data:\n${dataContext}\n\nTask:\n${
-            agent.initialTask || "Next step."
-          }\n\nPrevious Output:\n${truncate(context, 600)}\n`,
-        },
-      ],
-      onChunk: (txt) => {
-        output += txt;
-        card.output.textContent = output;
-        bumpProgress(node, 7);
+function renderStageBadges() {
+  const steps = [
+    { label: "Architect", active: state.stage === "architect", done: state.stage === "data" || state.stage === "run" || state.stage === "idle" && state.plan.length },
+    { label: "Data", active: state.stage === "data", done: state.stage === "run" || (state.stage === "idle" && state.agentOutputs.length) },
+    { label: "Agents", active: state.stage === "run", done: state.stage === "idle" && state.agentOutputs.length },
+  ];
+  return html`
+    <div class="d-flex gap-2 flex-wrap mb-4">
+      ${steps.map((step) => html`
+        <span class="badge text-bg-${step.active ? "primary" : step.done ? "success" : "secondary"}">
+          ${step.label}
+        </span>
+      `)}
+    </div>
+  `;
+}
+
+function renderPlan() {
+  const streaming = state.stage === "architect";
+  const hasPlan = state.plan.length > 0;
+  return html`
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-diagram-3 me-2"></i> Architect Plan</span>
+        <span class="badge text-bg-${streaming ? "primary" : hasPlan ? "success" : "secondary"}">
+          ${streaming ? "Planning" : hasPlan ? "Ready" : "Pending"}
+        </span>
+      </div>
+      <div class="card-body">
+        ${streaming
+          ? html`<pre class="bg-dark text-white rounded-3 p-3 mb-0" style="white-space: pre-wrap;">${state.architectBuffer || "Streaming architect plan..."}</pre>`
+          : hasPlan
+            ? html`
+            <ol class="list-group list-group-numbered">
+              ${state.plan.map((agent) => html`
+                <li class="list-group-item">
+                  <div class="d-flex justify-content-between align-items-start">
+                    <div>
+                      <div class="fw-semibold">${agent.agentName}</div>
+                      <div class="text-body-secondary small">${agent.initialTask}</div>
+                    </div>
+                    <span class="badge text-bg-light text-uppercase">${agent.systemInstruction ? "Instruction" : ""}</span>
+                  </div>
+                  ${agent.systemInstruction
+                    ? html`<p class="small mb-0 mt-2 text-body-secondary">${agent.systemInstruction}</p>`
+                    : null}
+                </li>
+              `)}
+            </ol>
+          `
+            : html`<div class="text-center py-3 text-body-secondary small">Plan will appear here after the architect stream completes.</div>`}
+      </div>
+    </section>
+  `;
+}
+
+function renderDataInputs() {
+  const disabled = !state.plan.length || state.stage === "architect" || state.stage === "run";
+  return html`
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+        <div><i class="bi bi-database me-2"></i> Data Inputs</div>
+        <button class="btn btn-sm btn-primary" @click=${startAgents} ?disabled=${disabled}>
+          ${state.stage === "run" ? "Running..." : "Start Agents"}
+        </button>
+      </div>
+      <div class="card-body">
+        <div class="row g-3">
+          <div class="col-lg-7">
+            ${state.suggestedInputs.length
+              ? html`
+                <div class="list-group">
+                  ${state.suggestedInputs.map((input) => {
+                    const selected = state.selectedInputs.has(input.id);
+                    return html`
+                      <button type="button" class="list-group-item list-group-item-action d-flex flex-column gap-1 ${selected ? "active" : ""}" @click=${() => toggleSuggestedInput(input.id)}>
+                        <div class="d-flex justify-content-between align-items-center w-100">
+                          <span class="fw-semibold">${input.title}</span>
+                          <span class="badge text-uppercase bg-secondary">${input.type}</span>
+                        </div>
+                        <pre class="mb-0 small text-body-secondary" style="white-space: pre-wrap; word-break: break-word;">${truncate(input.content, 420)}</pre>
+                      </button>
+                    `;
+                  })}
+                </div>
+              `
+              : html`<p class="text-body-secondary small">Architect suggestions will appear here.</p>`}
+          </div>
+          <div class="col-lg-5">
+            <div class="mb-3">
+              <label class="form-label small fw-semibold" for="data-upload">Upload CSV/JSON/TXT</label>
+              <input id="data-upload" class="form-control" type="file" multiple accept=".txt,.csv,.json" @change=${handleFileUpload} />
+              ${state.uploads.length
+                ? html`
+                  <ul class="list-group list-group-flush mt-2 small">
+                    ${state.uploads.map((upload) => html`
+                      <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <div>
+                          <div class="fw-semibold">${upload.title}</div>
+                          <div class="text-body-secondary">${formatBytes(upload.meta?.size || 0)} · ${upload.type.toUpperCase()}</div>
+                        </div>
+                        <button class="btn btn-link btn-sm text-danger" type="button" @click=${() => removeUpload(upload.id)}>Remove</button>
+                      </li>
+                    `)}
+                  </ul>
+                `
+                : html`<p class="small text-body-secondary mt-2 mb-0">Attached files stay in the browser.</p>`}
+            </div>
+            <div>
+              <label class="form-label small fw-semibold" for="data-notes">Inline notes</label>
+              <textarea
+                id="data-notes"
+                class="form-control"
+                rows="4"
+                placeholder="Paste quick metrics, KPIs, transcripts..."
+                .value=${state.notes}
+                @input=${(event) => setState({ notes: event.target.value })}
+              ></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderFlow() {
+  if (!state.plan.length) return null;
+  const status = (index) => {
+    if (state.stage === "architect") return "secondary";
+    if (state.stage === "run") {
+      if (index < (state.runningAgentIndex ?? 0)) return "success";
+      if (index === state.runningAgentIndex) return "primary";
+      return "secondary";
+    }
+    return state.agentOutputs[index] ? "success" : "secondary";
+  };
+  return html`
+    <section class="card mb-4">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span>Flow Diagram</span>
+        <small class="text-body-secondary">Agent titles</small>
+      </div>
+      <div class="card-body">
+        <div class="flow-grid">
+          ${state.plan.map((agent, index) => html`
+            <div class="card border-${status(index)} border-2 flex-shrink-0 flow-node text-center">
+              <div class="card-body py-3">
+                <div class="fw-semibold">${agent.agentName}</div>
+              </div>
+            </div>
+          `)}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderAgentOutputs() {
+  if (!state.agentOutputs.length) return null;
+  return html`
+    <section class="mb-5">
+      ${state.agentOutputs.map((agent, index) => html`
+        <div class="card mb-3 shadow-sm">
+          <div class="card-body row g-3 align-items-stretch">
+            <div class="col-md-4 d-flex flex-column">
+              <p class="text-uppercase small text-body-secondary mb-1">Step ${index + 1}</p>
+              <h6 class="mb-2">${agent.name}</h6>
+              <p class="text-body-secondary small flex-grow-1 mb-3">${agent.task || agent.instruction || "Specialist executing next action."}</p>
+              ${(() => {
+                const meta = statusMeta(agent.status);
+                return html`<span class="badge text-bg-${meta.color} align-self-start">${meta.label}</span>`;
+              })()}
+            </div>
+            <div class="col-md-8">
+              <div class="${agentStreamClasses(agent)}">
+                ${renderAgentOutputBody(agent)}
+              </div>
+            </div>
+          </div>
+        </div>
+      `)}
+    </section>
+  `;
+}
+
+function renderAgentOutputBody(agent) {
+  if (!agent.text) {
+    return html`<div class="text-center py-3">${loading}</div>`;
+  }
+  if (agent.status === "done") {
+    return unsafeHTML(marked.parse(agent.text));
+  }
+  const tone = agent.status === "error" ? "text-warning" : "text-white";
+  return html`<pre class="mb-0 ${tone}" style="white-space: pre-wrap;">${agent.text}</pre>`;
+}
+
+function statusMeta(status) {
+  if (status === "done") return { label: "Done", color: "success" };
+  if (status === "error") return { label: "Error", color: "danger" };
+  return { label: "Running", color: "primary" };
+}
+
+function agentStreamClasses(agent) {
+  if (agent.status === "error") return "agent-stream border rounded-3 p-3 bg-dark text-warning";
+  if (agent.status === "done") return "agent-stream border rounded-3 p-3 bg-body";
+  return "agent-stream border rounded-3 p-3 bg-black text-white";
+}
+
+async function planDemo(index) {
+  selectDemo(index);
+  await runArchitect();
+}
+
+async function handleCustomProblemSubmit(event) {
+  event.preventDefault();
+  if (state.stage === "architect" || state.stage === "run") return;
+  const value = customProblemField?.value?.trim();
+  if (!value) {
+    setState({ error: "Enter a custom problem statement before running." });
+    customProblemField?.focus();
+    return;
+  }
+  selectCustomProblem(value);
+  await runArchitect();
+}
+
+function selectDemo(index) {
+  const demo = config.demos[index];
+  const baseInputs = (demo?.inputs || []).map((input) => ({ ...input, id: input.id || uniqueId("input") }));
+  setState({
+    selectedDemoIndex: index,
+    customProblem: null,
+    stage: "architect",
+    plan: [],
+    suggestedInputs: baseInputs,
+    selectedInputs: new Set(baseInputs.map((input) => input.id)),
+    uploads: [],
+    notes: "",
+    agentOutputs: [],
+    architectBuffer: "",
+    runningAgentIndex: null,
+    error: "",
+  });
+}
+
+function selectCustomProblem(problemText) {
+  const customDemo = {
+    title: "Custom Problem",
+    body: "User-supplied brief",
+    problem: problemText,
+    inputs: [],
+  };
+  setState({
+    selectedDemoIndex: -1,
+    customProblem: customDemo,
+    stage: "architect",
+    plan: [],
+    suggestedInputs: [],
+    selectedInputs: new Set(),
+    uploads: [],
+    notes: "",
+    agentOutputs: [],
+    architectBuffer: "",
+    runningAgentIndex: null,
+    error: "",
+  });
+}
+
+async function ensureLLMConfig() {
+  if (!llmSession.creds) {
+    llmSession.creds = await openaiConfig({ show: true });
+  }
+  return llmSession.creds;
+}
+
+async function runArchitect() {
+  const demo = getSelectedDemo();
+  if (!demo) return;
+  try {
+    const llm = await ensureLLMConfig();
+    if (!llm?.baseUrl || !llm?.apiKey) throw new Error("Configure the LLM base URL and API key first.");
+    const model = getModel();
+    const prompt = getArchitectPrompt();
+    const maxAgents = getMaxAgents();
+    const systemPrompt = `${prompt}\nLimit to <= ${maxAgents} agents.`.trim();
+    const messages = [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: demo.problem },
+    ];
+    const body = { model, messages, stream: true };
+    setState({ stage: "architect", plan: [], suggestedInputs: [], selectedInputs: new Set(), architectBuffer: "", error: "" });
+    let buffer = "";
+    await streamChatCompletion({
+      llm,
+      body,
+      onChunk: (text) => {
+        buffer += text;
+        setState({ architectBuffer: buffer });
       },
     });
-    context = output.trim() || context;
-    const confidence = randomConfidence(validating ? 0.65 : 0.75);
-    setFlowConfidence(node, confidence);
-    if (validating && confidence < 0.8) showFlowLoop(node);
-    finishFlowNode(node);
-    deactivateCard(card, "Done");
+    const parsed = safeParseJson(buffer);
+    const plan = normalizePlan(parsed.plan, maxAgents);
+    const inputs = normalizeInputs(parsed.inputs, demo);
+    setState({
+      plan,
+      suggestedInputs: inputs,
+      selectedInputs: new Set(inputs.map((input) => input.id)),
+      stage: "data",
+      architectBuffer: buffer,
+    });
+  } catch (error) {
+    setState({ stage: "idle", runningAgentIndex: null, error: error?.message || String(error) });
   }
 }
 
-function finishRunState() {
-  state.stage = RUN_STAGES.IDLE;
-  toggleInlineRunButton(false);
-  setRunLabel(RUN_LABEL);
-  setRunningState(false);
-  setDataStatus("Run completed. Rerun the architect for a new plan or adjust data and rerun.");
-}
-
-function resetUI() {
-  state.stage = RUN_STAGES.IDLE;
-  state.plan = [];
-  state.inputs = [];
-  state.uploads = [];
-  state.config = null;
-  setPlaceholder();
-  resetFlowDiagram();
-  resetDataSection();
-  setDataStatus("Run the architect to generate suggested data.");
-  toggleInlineRunButton(false);
-  setRunLabel(RUN_LABEL);
-  setRunningState(false);
-}
-
-function readForm() {
-  return {
-    apiKey: nodes.form["api-key"].value.trim(),
-    model: $("#model").value.trim() || "gpt-5-mini",
-    baseUrl: trimUrl($("#base-url").value.trim()) || DEFAULT_BASE_URL,
-    problem: $("#problem").value.trim(),
-  };
-}
-
-function renderInputCards(list) {
-  if (!nodes.dummyGrid) return;
-  nodes.dummyGrid.innerHTML = "";
-  if (!list.length) {
-    nodes.dummyGrid.classList.add("visually-hidden");
+async function startAgents() {
+  if (!state.plan.length || state.stage === "architect" || state.stage === "run") return;
+  const demo = getSelectedDemo();
+  if (!demo) return;
+  const dataEntries = collectDataEntries();
+  if (!dataEntries.length) {
+    setState({ error: "Select or add at least one dataset before running agents." });
     return;
   }
-  list.forEach((item) => {
-    const col = document.createElement("div");
-    col.className = "col";
-    const card = document.createElement("div");
-    card.className = "dummy-data-card h-100";
-    card.dataset.inputId = item.id;
-    card.innerHTML = `
-      <div class="d-flex justify-content-between align-items-center mb-2">
-        <span class="fw-semibold">${item.title}</span>
-        <span class="badge bg-secondary text-uppercase">${item.type.toUpperCase()}</span>
-      </div>
-      <pre class="small mb-0">${truncate(item.content, 280)}</pre>
-      <p class="small text-body-secondary mb-0 mt-2">Click to toggle selection.</p>`;
-    col.appendChild(card);
-    nodes.dummyGrid.appendChild(col);
+  try {
+    const llm = await ensureLLMConfig();
+    if (!llm?.baseUrl || !llm?.apiKey) throw new Error("Configure the LLM base URL and API key first.");
+    const model = getModel();
+    const agentStyle = getAgentStyle();
+    const inputBlob = formatDataEntries(dataEntries);
+    setState({ stage: "run", agentOutputs: [], runningAgentIndex: null, error: "" });
+    let context = inputBlob;
+    for (let index = 0; index < state.plan.length; index += 1) {
+      const agent = state.plan[index];
+      const agentId = uniqueId("agent");
+      setState({
+        agentOutputs: [
+          ...state.agentOutputs,
+          {
+            id: agentId,
+            name: agent.agentName,
+            task: agent.initialTask,
+            instruction: agent.systemInstruction,
+            text: "",
+            status: "running",
+          },
+        ],
+        runningAgentIndex: index,
+      });
+      let buffer = "";
+      try {
+        await streamChatCompletion({
+          llm,
+          body: {
+            model,
+            stream: true,
+            messages: [
+              { role: "system", content: `${agent.systemInstruction}\n${agentStyle}`.trim() },
+              {
+                role: "user",
+                content: `Problem:\n${demo.problem}\n\nTask:\n${agent.initialTask}\n\nInput Data:\n${inputBlob}\n\nPrevious Output:\n${truncate(context, 800)}`,
+              },
+            ],
+          },
+          onChunk: (text) => {
+            buffer += text;
+            updateAgentOutput(agentId, buffer, "running");
+          },
+        });
+        updateAgentOutput(agentId, buffer, "done");
+        context = buffer.trim() || context;
+      } catch (error) {
+        updateAgentOutput(agentId, buffer, "error");
+        throw error;
+      }
+    }
+    setState({ stage: "idle", runningAgentIndex: null });
+  } catch (error) {
+    setState({ stage: "idle", runningAgentIndex: null, error: error?.message || String(error) });
+  }
+}
+
+function updateAgentOutput(agentId, text, status) {
+  setState({
+    agentOutputs: state.agentOutputs.map((entry) => (entry.id === agentId ? { ...entry, text, status: status || entry.status } : entry)),
   });
-  nodes.dummyGrid.classList.remove("visually-hidden");
+}
+
+function toggleSuggestedInput(id) {
+  const next = new Set(state.selectedInputs);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  setState({ selectedInputs: next });
+}
+
+function handleFileUpload(event) {
+  const files = Array.from(event.target.files || []);
+  files.forEach((file) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const entry = {
+        id: uniqueId("upload"),
+        title: file.name,
+        type: inferTypeFromName(file.name),
+        content: reader.result?.toString() || "",
+        meta: { size: file.size },
+        source: "upload",
+      };
+      setState({ uploads: [...state.uploads, entry] });
+    };
+    reader.readAsText(file);
+  });
+  event.target.value = "";
+}
+
+function removeUpload(id) {
+  setState({ uploads: state.uploads.filter((upload) => upload.id !== id) });
 }
 
 function collectDataEntries() {
-  const selected = nodes.dummyGrid
-    ? Array.from(nodes.dummyGrid.querySelectorAll("[data-input-id].active")).map((card) => card.dataset.inputId)
-    : [];
-  const suggestions = state.inputs.filter((input) => selected.includes(input.id)).map((item) => ({ ...item, source: "suggested" }));
-  const uploads = state.uploads.map((item) => ({ ...item, source: "upload" }));
+  const suggestions = state.suggestedInputs.filter((input) => state.selectedInputs.has(input.id));
+  const uploads = state.uploads || [];
   const entries = [...suggestions, ...uploads];
-  if (nodes.dataNotes?.value.trim()) {
-    entries.push({
-      id: uniqueId("note"),
-      title: "User Notes",
-      type: "text",
-      content: nodes.dataNotes.value.trim(),
-      source: "notes",
-    });
+  const note = (state.notes || "").trim();
+  if (note) {
+    entries.push({ id: uniqueId("note"), title: "User Notes", type: "text", content: state.notes.trim(), source: "notes" });
   }
   return entries;
 }
 
-function renderUploadedDataList() {
-  if (!nodes.uploadedList) return;
-  nodes.uploadedList.innerHTML = "";
-  if (!state.uploads.length) {
-    nodes.uploadedList.classList.add("d-none");
-    return;
-  }
-  state.uploads.forEach((entry) => {
-    const item = document.createElement("li");
-    item.className = "list-group-item d-flex justify-content-between align-items-start";
-    item.innerHTML = `
-      <div>
-        <div class="fw-semibold">${entry.title}</div>
-        <div class="small text-body-secondary">${formatBytes(entry.meta?.size || 0)} - ${entry.type.toUpperCase()}</div>
-      </div>
-      <button type="button" class="btn btn-link btn-sm text-danger" data-remove-upload="${entry.id}">Remove</button>`;
-    nodes.uploadedList.appendChild(item);
-  });
-  nodes.uploadedList.classList.remove("d-none");
+function getSelectedDemo() {
+  if (state.selectedDemoIndex === null) return null;
+  if (state.selectedDemoIndex === -1) return state.customProblem;
+  return config.demos[state.selectedDemoIndex];
 }
 
-function handleFiles(list) {
-  const files = Array.from(list || []);
-  files.forEach((file) => {
-    const inferredType = inferTypeFromName(file.name);
-    if (!ALLOWED_INPUT_TYPES.includes(inferredType)) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      state.uploads.push({
-        id: uniqueId("upload"),
-        title: file.name,
-        type: inferredType,
-        content: reader.result ? reader.result.toString() : "",
-        meta: { size: file.size },
-      });
-      renderUploadedDataList();
-      setDataStatus("Files attached. Add notes or select suggested data.");
-    };
-    reader.readAsText(file);
-  });
-  if (nodes.fileInput) nodes.fileInput.value = "";
+function getModel() {
+  return ($("#model")?.value || config.defaults?.model || "gpt-5-mini").trim();
 }
 
-function inferTypeFromName(name = "") {
-  const lower = name.toLowerCase();
-  if (lower.endsWith(".csv")) return "csv";
-  if (lower.endsWith(".json")) return "json";
-  if (lower.endsWith(".txt")) return "text";
-  return "file";
+function getArchitectPrompt() {
+  return ($("#architect-prompt")?.value || config.defaults?.architectPrompt || "").trim();
 }
 
-function sanitizeInputType(value) {
-  const lower = (value || "").toString().trim().toLowerCase();
-  return ALLOWED_INPUT_TYPES.includes(lower) ? lower : "text";
+function getAgentStyle() {
+  return ($("#agent-style")?.value || config.defaults?.agentStyle || "").trim();
 }
 
-function formatDataEntries(entries) {
-  if (!entries.length) return "User did not attach additional datasets.";
-  return entries.map((entry, idx) => `${idx + 1}. ${entry.title} [${entry.type}]\n${truncate(entry.content, 500)}`).join("\n\n");
+function getMaxAgents() {
+  const value = parseInt($("#max-agents")?.value || config.defaults?.maxAgents || 5, 10);
+  return Number.isFinite(value) ? Math.min(Math.max(value, 2), 6) : 5;
 }
 
-function parsePlanResponse(text, problem) {
-  const parsed = safeParseJson(text);
-  const plan = normalizePlan(parsed.plan);
-  const inputs = normalizeInputs(parsed.inputs, problem);
-  return { plan, inputs: inputs.length ? inputs : defaultInputs(problem) };
-}
-
-function normalizePlan(list) {
-  if (!Array.isArray(list)) return fallbackPlan();
-  const base = fallbackPlan();
-  const normalized = list
+function normalizePlan(list, maxAgents) {
+  if (!Array.isArray(list)) return [];
+  return list
     .filter((item) => item && typeof item === "object")
-    .slice(0, MAX_AGENTS)
+    .slice(0, maxAgents)
     .map((item, index) => ({
       agentName: (item.agentName || `Agent ${index + 1}`).trim(),
       systemInstruction: (item.systemInstruction || "Deliver the next actionable step.").trim(),
       initialTask: (item.initialTask || item.systemInstruction || "Next step.").trim(),
     }));
-  while (normalized.length < MIN_AGENTS) normalized.push(base[normalized.length % base.length]);
-  return normalized;
 }
 
-function normalizeInputs(list, problem) {
-  if (!Array.isArray(list)) return [];
+function normalizeInputs(list, demo) {
+  if (!Array.isArray(list) || !list.length) return (demo?.inputs || []).map((input) => ({ ...input, id: input.id || uniqueId("input") }));
   return list
     .filter((item) => item && typeof item === "object")
     .slice(0, 3)
@@ -375,204 +603,66 @@ function normalizeInputs(list, problem) {
       id: uniqueId("input"),
       title: (item.title || `Input ${index + 1}`).trim(),
       type: sanitizeInputType(item.type),
-      content: (item.sample || item.example || item.content || truncate(problem, 200) || "Provide context.").trim(),
+      content: (item.sample || item.content || item.example || demo?.problem || "").trim(),
     }));
 }
 
-function fallbackPlan() {
-  return [
-    { agentName: "Planner", systemInstruction: "Outline the next actionable step.", initialTask: "Outline the next step." },
-    { agentName: "Validator", systemInstruction: "Validate previous output.", initialTask: "Validate and adjust previous result." },
-  ];
+function sanitizeInputType(value) {
+  const allowed = ["text", "csv", "json"];
+  const lower = (value || "").toString().trim().toLowerCase();
+  return allowed.includes(lower) ? lower : "text";
 }
 
-function defaultInputs(problem) {
-  return [
-    { id: uniqueId("input"), title: "Problem Brief", type: "text", content: truncate(problem, 280) || "Summarize the request." },
-    { id: uniqueId("input"), title: "Sample Metrics", type: "csv", content: "metric,value\nMetric A,0\nMetric B,0\nMetric C,0" },
-    { id: uniqueId("input"), title: "Notes", type: "text", content: "- Constraint: TBD\n- Stakeholders: TBD\n- Risk: TBD" },
-  ];
+function formatDataEntries(entries) {
+  if (!entries.length) return "User did not attach additional datasets.";
+  return entries.map((entry, idx) => `${idx + 1}. ${entry.title} [${entry.type}]\n${truncate(entry.content, 600)}`).join("\n\n");
 }
 
-function streamOpenAI({ apiKey, baseUrl, model, messages, onChunk }) {
-  return fetch(`${baseUrl}/chat/completions`, {
+async function streamChatCompletion({ llm, body, onChunk = () => {} }) {
+  const response = await fetch(`${llm.baseUrl}/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model, messages, stream: true }),
-  }).then((response) => {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder("utf-8");
-    let buffer = "";
-    function read() {
-      return reader.read().then(({ done, value }) => {
-        if (done) return;
-        buffer += decoder.decode(value, { stream: true });
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop() || "";
-        parts.forEach((part) => {
-          if (!part.startsWith("data:")) return;
-          const data = part.slice(5).trim();
-          if (data === "[DONE]") return;
-          const json = safeParseJson(data);
-          const text = json.choices?.[0]?.delta?.content;
-          if (text) onChunk(text);
-        });
-        return read();
-      });
-    }
-    return read();
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${llm.apiKey}` },
+    body: JSON.stringify(body),
   });
-}
-
-function createAgentCard(title, subtitle, badge) {
-  const wrapper = document.createElement("section");
-  wrapper.className = "agent-card card shadow-sm";
-  wrapper.innerHTML = `
-    <div class="card-body row g-3 align-items-stretch">
-      <div class="col-md-4 agent-summary">
-        <p class="text-uppercase small text-body-secondary mb-1">${badge}</p>
-        <h6 class="mb-2">${title}</h6>
-        <p class="text-body-secondary small mb-3">${subtitle}</p>
-        <span class="badge bg-secondary" data-status>Queued</span>
-      </div>
-      <div class="col-md-8">
-        <pre class="agent-stream border rounded-3 p-3 mb-0 bg-black text-white"></pre>
-      </div>
-    </div>`;
-  return { wrapper, output: wrapper.querySelector("pre"), status: wrapper.querySelector("[data-status]"), title };
-}
-
-function addFlowNode(label, mode = "process") {
-  const placeholder = nodes.flowNodes.querySelector("[data-placeholder]");
-  if (placeholder) placeholder.remove();
-  const wrapper = document.createElement("div");
-  wrapper.className = "flow-node";
-  wrapper.classList.add(mode === "validation" ? "state-validation" : "state-processing");
-  wrapper.innerHTML = `
-    <div class="fw-semibold">${label}</div>
-    <div class="text-body-secondary small mb-2">${mode === "validation" ? "Validation" : "Processing"}</div>
-    <div class="progress mb-2"><div class="progress-bar bg-primary" style="width:0%"></div></div>
-    <div class="small text-body-secondary">Confidence: <span data-confidence>--</span></div>
-    <div class="text-warning small mt-1 d-none" data-loop>Validation loop</div>`;
-  nodes.flowNodes.appendChild(wrapper);
-  return {
-    wrapper,
-    progressBar: wrapper.querySelector(".progress-bar"),
-    confidence: wrapper.querySelector("[data-confidence]"),
-    loop: wrapper.querySelector("[data-loop]"),
-  };
-}
-
-function activateCard(card, label = "Running") {
-  card.status.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${label}`;
-  card.status.classList.remove("bg-secondary", "bg-success");
-  card.status.classList.add("bg-primary");
-  card.wrapper.scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
-function deactivateCard(card, label) {
-  card.status.textContent = label;
-  card.status.classList.remove("bg-primary");
-  card.status.classList.add("bg-success");
-}
-
-function renderPlanSummary(card, plan, rawText) {
-  const lines = plan.map(
-    (agent, idx) => `${idx + 1}. ${(agent.agentName || `Agent ${idx + 1}`).trim()}: ${agent.initialTask || agent.systemInstruction || "Next action"}`,
-  );
-  const summary = `Execution Order:\n${lines.join("\n")}`;
-  card.output.textContent = rawText ? `${summary}\n\nRaw Plan:\n${rawText}` : summary;
-}
-
-function setPlaceholder() {
-  nodes.agentContainer.innerHTML = PLACEHOLDER;
-}
-
-function resetFlowDiagram() {
-  nodes.flowNodes.innerHTML = "";
-  const note = document.createElement("div");
-  note.className = "text-body-secondary small";
-  note.dataset.placeholder = "true";
-  note.textContent = "Nodes will appear here as agents execute. Colors: blue=processing, yellow=validation, red=error, green=verified.";
-  nodes.flowNodes.appendChild(note);
-}
-
-function setFlowConfidence(node, value) {
-  node.progressBar.style.width = "100%";
-  node.confidence.textContent = value.toFixed(2);
-}
-
-function bumpProgress(node, delta) {
-  const current = parseFloat(node.progressBar.style.width) || 0;
-  node.progressBar.style.width = `${Math.min(95, current + delta)}%`;
-}
-
-function finishFlowNode(node) {
-  node.wrapper.classList.remove("state-processing", "state-validation", "state-error");
-  node.wrapper.classList.add("state-success");
-}
-
-function showFlowLoop(node) {
-  node.loop.classList.remove("d-none");
-}
-
-function setRunningState(isRunning, label = "Running") {
-  if (!nodes.runButton) return;
-  if (isRunning) {
-    nodes.runButton.disabled = true;
-    nodes.runButton.innerHTML = `<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>${label}`;
-  } else {
-    nodes.runButton.disabled = false;
-    nodes.runButton.innerHTML = currentRunLabel;
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`HTTP ${response.status} ${response.statusText} - ${message}`);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Streaming not supported in this browser.");
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split("\n\n");
+    buffer = parts.pop() || "";
+    parts.forEach((part) => {
+      if (!part.startsWith("data:")) return;
+      const payload = part.slice(5).trim();
+      if (!payload || payload === "[DONE]") return;
+      const json = safeParseJson(payload);
+      const text = json.choices?.[0]?.delta?.content;
+      if (text) onChunk(text);
+    });
   }
 }
 
-function setRunLabel(text) {
-  if (!nodes.runButton) return;
-  currentRunLabel = text;
-  nodes.runButton.innerHTML = text;
-  nodes.runButton.disabled = false;
+function formatBytes(bytes) {
+  if (!bytes) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  const value = (bytes / 1024 ** exp).toFixed(1);
+  return `${value} ${units[exp]}`;
 }
 
-function setDataStatus(text) {
-  if (nodes.dataStatus) nodes.dataStatus.textContent = text;
-}
-
-function placeDataSectionAfter(element) {
-  if (!nodes.dataSection || !element) return;
-  element.insertAdjacentElement("afterend", nodes.dataSection);
-  nodes.dataSection.classList.remove("d-none");
-}
-
-function restoreDataSectionPosition() {
-  if (!nodes.dataSection || !dataSectionHome.parent) return;
-  if (dataSectionHome.next && dataSectionHome.next.parentNode === dataSectionHome.parent) {
-    dataSectionHome.parent.insertBefore(nodes.dataSection, dataSectionHome.next);
-  } else {
-    dataSectionHome.parent.appendChild(nodes.dataSection);
-  }
-  nodes.dataSection.classList.add("d-none");
-  nodes.dataSection.classList.remove("data-section-highlight");
-}
-
-function highlightDataSection(active) {
-  if (!nodes.dataSection) return;
-  if (active) nodes.dataSection.classList.remove("d-none");
-  nodes.dataSection.classList[active ? "add" : "remove"]("data-section-highlight");
-  if (active) nodes.dataSection.scrollIntoView({ behavior: "smooth", block: "center" });
-}
-
-function toggleInlineRunButton(visible) {
-  if (!nodes.inlineRunButton) return;
-  nodes.inlineRunButton.classList[visible ? "remove" : "add"]("d-none");
-  nodes.inlineRunButton.disabled = !visible;
-}
-
-function resetDataSection() {
-  renderInputCards([]);
-  renderUploadedDataList();
-  if (nodes.dataNotes) nodes.dataNotes.value = "";
-  restoreDataSectionPosition();
+function inferTypeFromName(name = "") {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".csv")) return "csv";
+  if (lower.endsWith(".json")) return "json";
+  if (lower.endsWith(".txt")) return "text";
+  return "text";
 }
 
 function truncate(text, max) {
@@ -580,72 +670,8 @@ function truncate(text, max) {
   return text.length > max ? `${text.slice(0, max - 3)}...` : text;
 }
 
-function trimUrl(url) {
-  return url ? url.replace(/\/+$/, "") : "";
-}
-
-function randomConfidence(base = 0.7) {
-  return Math.min(0.99, base + Math.random() * 0.25);
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return "0 B";
-  const units = ["B", "KB", "MB", "GB"];
-  const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
-  const value = (bytes / 1024 ** exponent).toFixed(1);
-  return `${value} ${units[exponent]}`;
-}
-
 function uniqueId(prefix) {
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function persistFields(ids) {
-  ids.forEach((id) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const key = `orchestrator:${id}`;
-    const stored = localStorage.getItem(key);
-    if (stored && !el.value) el.value = stored;
-    el.addEventListener("input", () => localStorage.setItem(key, el.value || ""));
-  });
-}
-
-function loadProblems() {
-  const container = document.getElementById("problem-cards");
-  if (container) container.innerHTML = '<div class="text-body-secondary small">Loading starter problems...</div>';
-  fetch("config.json")
-    .then((res) => res.json())
-    .then((data) => {
-      const problems = Array.isArray(data.problems) ? data.problems : [];
-      renderProblemCards(problems);
-    });
-}
-
-function renderProblemCards(list) {
-  const container = document.getElementById("problem-cards");
-  if (!container) return;
-  container.innerHTML = "";
-  list.forEach((item) => {
-    const col = document.createElement("div");
-    col.className = "col";
-    col.innerHTML = `
-      <div class="card h-100 shadow-sm">
-        <div class="card-body d-flex flex-column">
-          <p class="text-uppercase small text-body-secondary mb-1">${item.tag}</p>
-          <h5>${item.title}</h5>
-          <p class="text-body-secondary small flex-grow-1 mb-3">${item.summary}</p>
-          <button type="button" class="btn btn-outline-primary btn-sm mt-auto">Use problem</button>
-        </div>
-      </div>`;
-    col.querySelector("button").addEventListener("click", () => {
-      const textarea = $("#problem");
-      textarea.value = item.problem;
-      textarea.focus();
-      textarea.scrollIntoView({ behavior: "smooth", block: "center" });
-    });
-    container.appendChild(col);
-  });
+  return `${prefix}-${Math.random().toString(36).slice(2, 8)}-${Date.now().toString(36)}`;
 }
 
 function safeParseJson(text) {
@@ -654,4 +680,11 @@ function safeParseJson(text) {
   } catch {
     return {};
   }
+}
+
+function syncCustomProblemControls() {
+  if (!customProblemButton) return;
+  const busy = state.stage === "architect" || state.stage === "run";
+  customProblemButton.disabled = busy;
+  customProblemButton.textContent = busy ? "Streaming..." : "Plan & Run Custom";
 }

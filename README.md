@@ -1,34 +1,29 @@
-﻿# Streamline Agents
+# Streamline Agents
 
-Client-side multi-agent orchestrator that mirrors Hypoforge's clean workflow: users bring their own API credentials, craft or pick a problem card, and watch an architect plan and specialists execute with live streaming output.
+Browser-based demo scaffolded from the `sanand0/scripts` demos skill: pick a workflow card, stream the architect plan as raw JSON via SSE, toggle the suggested datasets, upload your own context, and run every specialist agent with `lit-html` UI updates and markdown streaming.
 
 ## Features
 
-- **Browser-native** – `index.html` + `script.js` talk directly to any OpenAI-compatible endpoint via browser `fetch`.
-- **Starter problems** – editable `config.json` seeds the dashboard with curated briefs; pick one to autofill the prompt.
-- **Sequential agent flow** – Architect generates 2–5 agents; each agent receives the previous context, streams full output, and auto-scrolls into view.
-- **Flow diagram** – Colored nodes visualize progress (blue processing, yellow validation, red loop/issue, green verified) with confidence scores and loop indicators.
-- **Concise prompts** - Agents respond in <50 words to keep the transcript skimmable.
-- **Local persistence** – API base URL, key, model, and last problem statement persist in localStorage for quick reruns.
+- **Pure front-end stack** - `index.html` mirrors the reference navbar, hero, and settings layout, includes CDN import maps, and works from any static host.
+- **Config-driven demos** - `config.json` exposes `demos[]` cards (icon, copy, problem brief, starter datasets) plus `defaults` for prompts, models, and max agents.
+- **Custom briefs** - A “Bring Your Own Problem” form lets you stream the architect + agents against any ad-hoc statement without editing configs.
+- **Stateful settings** - The collapsible form persists via `saveform`, so model and prompt overrides survive reloads and can be reset instantly.
+- **LLM plumbing** - Credentials come from `bootstrap-llm-provider`, streaming is handled with a custom SSE decoder (mimicking the legacy repo), and agent responses render through `marked` + `highlight.js`.
+- **Responsive UX** - Every streaming stage shows a Bootstrap spinner, flow nodes reflect live status, uploads stay local, and markdown output is safe-rendered with `unsafeHTML`.
 
 ## Getting Started
 
-1. **Install dependencies**: none – open `index.html` in any modern browser.
-2. **Configure credentials**:
-   - API Base URL (e.g., `https://api.openai.com/v1`).
-   - API Key (compatible with the selected endpoint).
-   - Model (defaults to `gpt-5-mini`).
-3. **Choose a problem**: click a card from the hero grid or type your own brief.
-4. **Run Agents**: the architect streams the plan, each agent executes in turn, and the flow diagram updates live as the last specialist finishes.
+1. Open `index.html` in any modern browser (no build step required).
+2. Click **Configure LLM** in the navbar and enter an OpenAI-compatible base URL plus API key (stored by `bootstrap-llm-provider`).
+3. Optionally tweak the **Settings** form (model, architect prompt, agent style, max agents) - all values persist automatically via `saveform`.
+4. Either pick a starter card **or** paste your own brief into *Bring Your Own Problem*, hit **Plan & Run**, review the architect plan + suggested datasets, attach/paste extra data, and press **Start Agents** to stream each specialist output while the flow nodes update live.
 
 ## Customization
 
-- **Starter cards**: edit `config.json` to add/remove objects in the `problems` array.
-- **UI styling**: tweak Tailwind-like utilities in `index.html` or add custom CSS.
-- **Agent behavior**: adjust prompts or limits inside `script.js` (e.g., update `ARCHITECT_PROMPT`, change word count constraints, or modify flow-node heuristics).
+- **Demos**: edit `config.json` -> `demos[]` to change card metadata or starter datasets. Keep synthetic CSV/JSON/Text blobs under ~1 MB each per the SKILL guidance.
+- **Defaults**: adjust `config.json` -> `defaults` to control the initial model, architect prompt, agent style, or max-agents guardrail.
+- **Logic/UI**: tweak `script.js` to change prompts, streaming behavior, or rendering. Because the app uses `lit-html`, all state changes funnel through `setState`.
 
 ## Deployment
 
-Because everything is static, deploy via any static host (GitHub Pages, Netlify, Vercel, S3, etc.). Just ensure `config.json` is served alongside `index.html` so the problem cards load.
-
-Enjoy orchestrating agents without any backend glue!
+The project is static and GitHub Pages friendly. Host the folder anywhere (Pages, Netlify, Vercel, S3, etc.) ensuring `config.json` sits beside `index.html`. No backend services are required - credentials and files stay local except for calls sent directly to the configured LLM endpoint.

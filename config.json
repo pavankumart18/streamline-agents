@@ -1,35 +1,128 @@
-﻿{
-  "problems": [
+{
+  "title": "Streamline Agents",
+  "subtitle": "Multi-agent demos with architect planning, dataset toggles, and streaming chains.",
+  "narrative": "Each card seeds a realistic workflow. Run the architect to auto-generate specialist roles, review the suggested datasets, upload your own context, and stream the chain result inside the browser.",
+  "defaults": {
+    "model": "gpt-5-mini",
+    "architectPrompt": "Respond ONLY with JSON shaped as {\"plan\":[...],\"inputs\":[...]}. \"plan\": 2-5 agents, each with {\"agentName\",\"systemInstruction\",\"initialTask\"}. At least one validator. \"inputs\": up to 3 sample datasets with {\"title\",\"type\",\"sample\"}. Types: text,csv,json. Keep samples short (<=120 words).",
+    "agentStyle": "You are a focused specialist. Answer in <=50 words using crisp markdown bullets.",
+    "maxAgents": 5
+  },
+  "demos": [
     {
-      "title": "Regulatory Compliance Document Analyzer",
-      "tag": "Financial",
-      "summary": "Audit filings with extraction, validation, gap analysis, and risk scoring loops.",
-      "problem": "Build a regulatory compliance analyzer that ingests filings (10-K, 10-Q, prospectuses), extracts key sections, checks SEC/Basel/MiFID rules, runs gap + risk scoring loops, and outputs an audit-ready report."
+      "icon": "bi bi-shield-check",
+      "title": "Regulatory Compliance",
+      "body": "Audit 10-K style filings against SEC + Basel guidance.",
+      "problem": "Build a regulatory compliance analyzer that ingests filings (10-K, 10-Q, prospectuses), extracts key sections, checks SEC/Basel/MiFID rules, runs gap + risk scoring loops, and outputs an audit-ready report.",
+      "inputs": [
+        {
+          "title": "Filing Snapshot",
+          "type": "text",
+          "content": "Issuer: Northwind Capital\nRegion: US + EU exposure\nRisk flags: derivative hedges +12%, liquidity ratio 0.93\nNotes: Basel III add-on pending."
+        },
+        {
+          "title": "Basel Metrics",
+          "type": "csv",
+          "content": "metric,value,threshold\nCET1 ratio,10.4,10\nLiquidity coverage,0.93,1\nLeverage,3.2,3"
+        },
+        {
+          "title": "Audit Notes",
+          "type": "text",
+          "content": "- Past fine for stress-test gaps.\n- New digital asset desk launched in Q2.\n- Need MiFID sustainability disclosure check."
+        }
+      ]
     },
     {
-      "title": "Research Paper Quality Pipeline",
-      "tag": "Publishers",
-      "summary": "Validate citations, methodology, originality, and formatting before issuing verdicts.",
-      "problem": "Create a research paper pipeline that analyzes structure, validates citations, reviews methodology, improves clarity, checks plagiarism and journal standards, scores quality, and issues accept/revise/reject guidance."
+      "icon": "bi bi-journal-text",
+      "title": "Research Quality Loop",
+      "body": "Score manuscripts before editorial review.",
+      "problem": "Create a research paper pipeline that analyzes structure, validates citations, reviews methodology, improves clarity, checks plagiarism and journal standards, scores quality, and issues accept/revise/reject guidance.",
+      "inputs": [
+        {
+          "title": "Abstract",
+          "type": "text",
+          "content": "We fine-tune a vision transformer for coral bleaching detection using 3 hyperspectral reefs, reporting 92% accuracy but limited cross-season validation."
+        },
+        {
+          "title": "Citation Sample",
+          "type": "csv",
+          "content": "citation,year,in_journal\nHughes et al.,2021,true\nMarin et al.,2019,false\nIto et al.,2023,true"
+        },
+        {
+          "title": "Reviewer Rubric",
+          "type": "json",
+          "content": "{ \"novelty\": 0-5, \"methods\": 0-5, \"writing\": 0-5, \"ethics\": \"ok|needs review\" }"
+        }
+      ]
     },
     {
-      "title": "Financial Earnings Intelligence",
-      "tag": "Financial",
-      "summary": "Parse transcripts + filings, cross-check metrics, and produce analyst-ready briefs.",
-      "problem": "Develop an earnings intelligence workflow that parses call transcripts and filings, extracts key metrics, analyzes sentiment, compares peers, flags anomalies, validates numbers, and drafts bull/bear theses plus alerts."
+      "icon": "bi bi-broadcast-pin",
+      "title": "Earnings Intelligence",
+      "body": "Parse transcripts, cross-check KPIs, draft theses.",
+      "problem": "Develop an earnings intelligence workflow that parses call transcripts and filings, extracts key metrics, analyzes sentiment, compares peers, flags anomalies, validates numbers, and drafts bull/bear theses plus alerts.",
+      "inputs": [
+        {
+          "title": "Transcript Snip",
+          "type": "text",
+          "content": "CFO: \"Gross margin compressed 140 bps QoQ due to expedited shipping.\" CEO: \"Guiding FY24 revenue to $1.4B-$1.5B\""
+        },
+        {
+          "title": "KPI Table",
+          "type": "csv",
+          "content": "metric,Q2 23,Q1 24,Q2 24\nRevenue,320,340,355\nGross Margin,48%,47%,45%\nActive Customers,1.2M,1.25M,1.33M"
+        },
+        {
+          "title": "Peer Benchmarks",
+          "type": "json",
+          "content": "{ \"PeerA\": {\"rev_growth\": 12}, \"PeerB\": {\"rev_growth\": 7} }"
+        }
+      ]
     },
     {
-      "title": "Multi-Channel Marketing Generator",
-      "tag": "Marketing",
-      "summary": "Turn briefs into messaging, assets, brand/legal checks, A/B tests, and predictions.",
-      "problem": "Design a marketing generator that transforms a brief into audience insights, messaging frameworks, multi-format assets, brand/legal validation loops, A/B test design, and performance estimates."
+      "icon": "bi bi-megaphone",
+      "title": "Marketing Generator",
+      "body": "Transform briefs into omnichannel assets.",
+      "problem": "Design a marketing generator that transforms a brief into audience insights, messaging frameworks, multi-format assets, brand/legal validation loops, A/B test design, and performance estimates.",
+      "inputs": [
+        {
+          "title": "Brief",
+          "type": "text",
+          "content": "Goal: Promote carbon-neutral shipping for SMB exporters in EU.\nTone: Confident, data-backed.\nCTA: Book a consult."
+        },
+        {
+          "title": "Audience Segments",
+          "type": "json",
+          "content": "{ \"Segment A\": \"B2B logistics leads\", \"Segment B\": \"FinOps champions\" }"
+        },
+        {
+          "title": "Historic CTR",
+          "type": "csv",
+          "content": "channel,ctr\nEmail,3.2%\nLinkedIn,1.8%\nPaid search,2.4%"
+        }
+      ]
     },
     {
-      "title": "Intelligent Customer Support Orchestrator",
-      "tag": "Support",
-      "summary": "Classify tickets, search KB, draft responses, score confidence, and learn.",
-      "problem": "Build a support orchestrator that classifies tickets, pulls customer history, searches the KB, drafts personalized responses, scores confidence, escalates when necessary, validates tone/accuracy, and updates the KB with new resolutions."
+      "icon": "bi bi-headset",
+      "title": "Support Orchestrator",
+      "body": "Classify, respond, and update KB loops.",
+      "problem": "Build a support orchestrator that classifies tickets, pulls customer history, searches the KB, drafts personalized responses, scores confidence, escalates when necessary, validates tone/accuracy, and updates the KB with new resolutions.",
+      "inputs": [
+        {
+          "title": "Ticket Body",
+          "type": "text",
+          "content": "\"Our EU warehouse connector keeps timing out after the latest patch. Need rollback instructions. Customer: Contoso Retail.\""
+        },
+        {
+          "title": "Customer History",
+          "type": "json",
+          "content": "{ \"plan\": \"Enterprise\", \"open_incidents\": 2, \"preferred_tone\": \"formal\" }"
+        },
+        {
+          "title": "KB Extract",
+          "type": "text",
+          "content": "Doc KB-442: EU connector patch adds TLS 1.3. Rollback requires feature flag CONNECTOR_EU_13 disabled + restart."
+        }
+      ]
     }
   ]
 }
-
