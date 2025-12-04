@@ -1,4 +1,4 @@
-# Streamline Agents
+# Agent Builder
 
 Browser-based demo scaffolded from the `sanand0/scripts` demos skill: pick a workflow card, stream the architect plan as raw JSON via SSE, toggle the suggested datasets, upload your own context, and run every specialist agent with `lit-html` UI updates and markdown streaming.
 

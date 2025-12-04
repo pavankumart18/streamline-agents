@@ -7,6 +7,11 @@ import saveform from "saveform";
 
 const $ = (selector, el = document) => el.querySelector(selector);
 const loading = html`<div class="spinner-border text-primary" role="status"><span class="visually-hidden">Loading...</span></div>`;
+const DEFAULT_BASE_URLS = [
+  "https://api.openai.com/v1",
+  "https://llmfoundry.straivedemo.com/openai/v1",
+  "https://llmfoundry.straive.com/openai/v1",
+];
 
 const marked = new Marked();
 marked.use({
@@ -24,7 +29,7 @@ $("#settings-form [type=reset]").addEventListener("click", () => settingsForm.cl
 
 const llmSession = { creds: null };
 $("#configure-llm").addEventListener("click", async () => {
-  llmSession.creds = await openaiConfig({ show: true });
+  llmSession.creds = await openaiConfig({ defaultBaseUrls: DEFAULT_BASE_URLS, show: true });
 });
 
 const config = await fetch("config.json").then((res) => res.json());
@@ -202,13 +207,14 @@ function renderDataInputs() {
                 <div class="list-group">
                   ${state.suggestedInputs.map((input) => {
                     const selected = state.selectedInputs.has(input.id);
+                    const mutedTextClass = selected ? "text-white" : "text-body-secondary";
                     return html`
-                      <button type="button" class="list-group-item list-group-item-action d-flex flex-column gap-1 ${selected ? "active" : ""}" @click=${() => toggleSuggestedInput(input.id)}>
+                      <button type="button" class="list-group-item list-group-item-action d-flex flex-column gap-1 ${selected ? "active text-white" : ""}" @click=${() => toggleSuggestedInput(input.id)}>
                         <div class="d-flex justify-content-between align-items-center w-100">
-                          <span class="fw-semibold">${input.title}</span>
+                          <span class="fw-semibold ${selected ? "text-white" : ""}">${input.title}</span>
                           <span class="badge text-uppercase bg-secondary">${input.type}</span>
                         </div>
-                        <pre class="mb-0 small text-body-secondary" style="white-space: pre-wrap; word-break: break-word;">${truncate(input.content, 420)}</pre>
+                        <pre class="mb-0 small ${mutedTextClass}" style="white-space: pre-wrap; word-break: break-word;">${truncate(input.content, 420)}</pre>
                       </button>
                     `;
                   })}
@@ -399,7 +405,7 @@ function selectCustomProblem(problemText) {
 
 async function ensureLLMConfig() {
   if (!llmSession.creds) {
-    llmSession.creds = await openaiConfig({ show: true });
+    llmSession.creds = await openaiConfig({ defaultBaseUrls: DEFAULT_BASE_URLS });
   }
   return llmSession.creds;
 }
